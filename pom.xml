@@ -23,8 +23,6 @@
 
     <modules>
         <module>pdfparser-core</module>
-        <module>pdfparser-annotation</module>
-        <module>pdfparser-converter</module>
         <module>pdfparser-extension</module>
         <module>pdfparser-test</module>
     </modules>

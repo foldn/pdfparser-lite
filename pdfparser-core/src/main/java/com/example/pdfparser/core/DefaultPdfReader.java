@@ -1,9 +1,12 @@
 package com.example.pdfparser.core;
 
+import com.example.pdfparser.annotation.PdfField;
+import com.example.pdfparser.annotation.PdfProcessor;
 import com.example.pdfparser.context.ParseContext;
 import com.example.pdfparser.event.ParseEventListener;
 import com.example.pdfparser.exception.PdfParseException;
 import com.example.pdfparser.options.ParseOptions;
+import com.example.pdfparser.processor.DocumentProcessor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -15,6 +18,8 @@ import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * PdfReader的默认实现类
@@ -90,8 +95,8 @@ public class DefaultPdfReader implements PdfReader {
         return context;
     }
 
+
     private <T> List<T> parseFile(File file, Class<T> clazz, ParseOptions options) throws IOException {
-        //
         try (PDDocument document = PDDocument.load(file, options.getPassword())) {
             return processPdfDocument(document, clazz, options);
         }
@@ -99,7 +104,7 @@ public class DefaultPdfReader implements PdfReader {
 
     private <T> List<T> processPdfDocument(PDDocument document, Class<T> clazz, ParseOptions options) throws IOException {
         PDFTextStripper stripper = new PDFTextStripper();
-        
+        context.setAttribute("startTime", System.currentTimeMillis());
         // 设置页码范围
         if (options.getStartPage() > 0) {
             stripper.setStartPage(options.getStartPage());
@@ -108,21 +113,56 @@ public class DefaultPdfReader implements PdfReader {
             stripper.setEndPage(options.getEndPage());
         }
 
+        // 配置文本提取选项
+        stripper.setSortByPosition(true);
+        stripper.setAddMoreFormatting(true);
+        stripper.setSpacingTolerance(0.5f);
+        // 设置字符间距容差
+        stripper.setAverageCharTolerance(0.3f);
+
+
         // 提取文本
         String text = stripper.getText(document);
+
+        // 处理文本，保持基本格式但去除多余空白
+        // 删除行首尾空白
+        text = text.replaceAll("(?m)^\\s+|\\s+$", "")
+                // 将多个空格替换为单个空格
+                .replaceAll("\\s{2,}", " ")
+                // 删除空行
+                .replaceAll("\\n\\s*\\n", "\n")
+                .trim();
+
         context.setAttribute("rawText", text);
+        context.setAttribute("startPage", stripper.getStartPage());
+        context.setAttribute("endPage", stripper.getEndPage());
 
         // 如果目标类是String，直接返回文本
         if (clazz == String.class) {
             return (List<T>) Collections.singletonList(text);
         }
 
-        // 创建结果对象并填充数据
+        // 检查是否有处理器注解
+        PdfProcessor processorAnnotation = clazz.getAnnotation(PdfProcessor.class);
+        if (processorAnnotation != null) {
+            try {
+                DocumentProcessor<T> processor = (DocumentProcessor<T>) processorAnnotation.processor()
+                    .getDeclaredConstructor().newInstance();
+                T result = processor.process(text, clazz);
+                return Collections.singletonList(result);
+            } catch (Exception e) {
+                log.error("Error creating processor instance", e);
+                throw new PdfParseException("Failed to process document", e);
+            }
+        }
+
+        // 默认处理逻辑
         List<T> results = new ArrayList<>();
         T instance = createInstance(clazz);
         fillObjectWithData(instance, text);
         results.add(instance);
 
+        context.setAttribute("endTime", System.currentTimeMillis());
         return results;
     }
 
@@ -140,13 +180,57 @@ public class DefaultPdfReader implements PdfReader {
         Class<?> clazz = instance.getClass();
         for (Field field : clazz.getDeclaredFields()) {
             field.setAccessible(true);
-            if (field.getType() == String.class) {
+            PdfField pdfField = field.getAnnotation(PdfField.class);
+            if (pdfField != null && pdfField.required()) {
                 try {
-                    field.set(instance, text);
+                    String value = extractFieldValue(text, pdfField);
+                    if (value != null) {
+                        // 根据字段类型进行类型转换
+                        Object convertedValue = convertToFieldType(value, field.getType());
+                        field.set(instance, convertedValue);
+                    }
                 } catch (IllegalAccessException e) {
-                    log.error("Error setting field value", e);
+                    log.error("Error setting field value for {}", field.getName(), e);
                 }
             }
         }
+    }
+
+    private String extractFieldValue(String text, PdfField pdfField) {
+        String pattern = pdfField.pattern();
+        if (!pattern.isEmpty()) {
+            // 使用正则表达式提取值
+            Pattern regex = Pattern.compile(pattern);
+            Matcher matcher = regex.matcher(text);
+            if (matcher.find()) {
+                return matcher.group(pdfField.group());
+            }
+        }
+
+        // 使用关键字提取
+        String prefix = pdfField.prefix();
+        String suffix = pdfField.suffix();
+        if (!prefix.isEmpty()) {
+            int startIndex = text.indexOf(prefix) + prefix.length();
+            int endIndex = suffix.isEmpty() ? text.length() : text.indexOf(suffix, startIndex);
+            if (startIndex >= 0 && endIndex >= 0) {
+                return text.substring(startIndex, endIndex).trim();
+            }
+        }
+
+        return null;
+    }
+
+    private Object convertToFieldType(String value, Class<?> fieldType) {
+        if (fieldType == String.class) {
+            return value;
+        } else if (fieldType == Integer.class || fieldType == int.class) {
+            return Integer.parseInt(value);
+        } else if (fieldType == Double.class || fieldType == double.class) {
+            return Double.parseDouble(value);
+        } else if (fieldType == Boolean.class || fieldType == boolean.class) {
+            return Boolean.parseBoolean(value);
+        }
+        return value;
     }
 } 

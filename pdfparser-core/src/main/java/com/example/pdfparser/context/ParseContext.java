@@ -6,7 +6,10 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 解析上下文，存储解析过程中的状态和数据
  */
-public class ParseContext {
+public class ParseContext{
+
+    private static final String ROW_TEXT_KEY = "rowText";
+
     private final Map<String, Object> attributes = new ConcurrentHashMap<>();
     
     public void setAttribute(String key, Object value) {
@@ -24,4 +27,9 @@ public class ParseContext {
     public boolean hasAttribute(String key) {
         return attributes.containsKey(key);
     }
+
+    public Map<String, Object> getContext() {
+        return attributes;
+    }
+
 } 
